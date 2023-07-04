@@ -1,5 +1,5 @@
 import torch
-from ..src.transformers import LlamaTokenizer, LlamaForCausalLM
+from transformers_local.src.transformers import LlamaTokenizer, LlamaForCausalLM
 import numpy as np
 from datasets import load_dataset
 import math
