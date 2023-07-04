@@ -1,5 +1,5 @@
 import torch
-from transformers_local.src.transformers import LlamaTokenizer, LlamaForCausalLM
+from ..src.transformers import LlamaTokenizer, LlamaForCausalLM
 import numpy as np
 from datasets import load_dataset
 import math
@@ -13,7 +13,7 @@ class Attn_Pred_Model(torch.nn.Module):
         self.alpha = torch.nn.Parameter(torch.zeros(1, requires_grad=True).cuda())
 
     def forward(self, x):
-        
+        return
 
 
 
@@ -60,8 +60,8 @@ for sample_index in sample_indices:
     ) # max_new_tokens should be larger, to analyze behaviour on generated text
     
     attn_list = generation_output['attentions'][0]
-
-    for attn in attn_list:
+    breakpoint()
+    # for attn in attn_list:
 
 
         
