@@ -189,6 +189,8 @@ class LlamaAttention(nn.Module):
         past_key_value: Optional[Tuple[torch.Tensor]] = None,
         output_attentions: bool = False,
         use_cache: bool = False,
+        bucketize_out_attn_norm: Optional[int] = None, 
+        bucket_size: Optional[int] = None
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
         bsz, q_len, _ = hidden_states.size()
 
@@ -245,6 +247,10 @@ class LlamaAttention(nn.Module):
 
         if not output_attentions:
             attn_weights = None
+        
+        elif bucketize_out_attn_norm is not None and bucket_size is not None:
+            attn_weights = torch.reshape(attn_weights, attn_weights.shape[:-1]+(attn_weights.shape[-1]//bucket_size, bucket_size))
+            attn_weights = torch.norm(attn_weights, dim=-1, p=bucketize_out_attn_norm)
 
         return attn_output, attn_weights, past_key_value
 
@@ -270,6 +276,8 @@ class LlamaDecoderLayer(nn.Module):
         past_key_value: Optional[Tuple[torch.Tensor]] = None,
         output_attentions: Optional[bool] = False,
         use_cache: Optional[bool] = False,
+        bucketize_out_attn_norm: Optional[int] = None, 
+        bucket_size: Optional[int] = None
     ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
         """
         Args:
@@ -284,7 +292,6 @@ class LlamaDecoderLayer(nn.Module):
                 (see `past_key_values`).
             past_key_value (`Tuple(torch.FloatTensor)`, *optional*): cached past key and value projection states
         """
-
         residual = hidden_states
 
         hidden_states = self.input_layernorm(hidden_states)
@@ -297,6 +304,8 @@ class LlamaDecoderLayer(nn.Module):
             past_key_value=past_key_value,
             output_attentions=output_attentions,
             use_cache=use_cache,
+            bucketize_out_attn_norm=bucketize_out_attn_norm,
+            bucket_size=bucket_size
         )
         hidden_states = residual + hidden_states
 
@@ -492,6 +501,8 @@ class LlamaModel(LlamaPreTrainedModel):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
+        bucketize_out_attn_norm: Optional[int] = None, 
+        bucket_size: Optional[int] = None
     ) -> Union[Tuple, BaseModelOutputWithPast]:
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
@@ -582,6 +593,8 @@ class LlamaModel(LlamaPreTrainedModel):
                     past_key_value=past_key_value,
                     output_attentions=output_attentions,
                     use_cache=use_cache,
+                    bucketize_out_attn_norm=bucketize_out_attn_norm, 
+                    bucket_size=bucket_size
                 )
 
             hidden_states = layer_outputs[0]
@@ -653,6 +666,8 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
+        bucketize_out_attn_norm: Optional[int] = None, 
+        bucket_size: Optional[int] = None
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         r"""
         Args:
@@ -679,7 +694,6 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
         >>> tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
         "Hey, are you conscious? Can you talk to me?\nI'm not conscious, but I can talk to you."
         ```"""
-
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
@@ -697,6 +711,8 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
+            bucketize_out_attn_norm=bucketize_out_attn_norm,
+            bucket_size=bucket_size
         )
 
         hidden_states = outputs[0]
@@ -753,6 +769,8 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
                 "past_key_values": past_key_values,
                 "use_cache": kwargs.get("use_cache"),
                 "attention_mask": attention_mask,
+                "bucketize_out_attn_norm": kwargs.get("bucketize_out_attn_norm"),
+                "bucket_size": kwargs.get("bucket_size")
             }
         )
         return model_inputs
