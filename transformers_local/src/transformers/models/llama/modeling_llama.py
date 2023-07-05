@@ -190,7 +190,7 @@ class LlamaAttention(nn.Module):
         output_attentions: bool = False,
         use_cache: bool = False,
         bucketize_out_attn_norm: Optional[int] = None, 
-        bucket_size: Optional[int] = None
+        num_buckets: Optional[int] = None
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
         bsz, q_len, _ = hidden_states.size()
 
@@ -248,8 +248,8 @@ class LlamaAttention(nn.Module):
         if not output_attentions:
             attn_weights = None
         
-        elif bucketize_out_attn_norm is not None and bucket_size is not None:
-            attn_weights = torch.reshape(attn_weights, attn_weights.shape[:-1]+(attn_weights.shape[-1]//bucket_size, bucket_size))
+        elif bucketize_out_attn_norm is not None and num_buckets is not None:
+            attn_weights = torch.reshape(attn_weights, attn_weights.shape[:-1]+(num_buckets, attn_weights.shape[-1]//num_buckets))
             attn_weights = torch.norm(attn_weights, dim=-1, p=bucketize_out_attn_norm)
 
         return attn_output, attn_weights, past_key_value
@@ -277,7 +277,7 @@ class LlamaDecoderLayer(nn.Module):
         output_attentions: Optional[bool] = False,
         use_cache: Optional[bool] = False,
         bucketize_out_attn_norm: Optional[int] = None, 
-        bucket_size: Optional[int] = None
+        num_buckets: Optional[int] = None
     ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
         """
         Args:
@@ -305,7 +305,7 @@ class LlamaDecoderLayer(nn.Module):
             output_attentions=output_attentions,
             use_cache=use_cache,
             bucketize_out_attn_norm=bucketize_out_attn_norm,
-            bucket_size=bucket_size
+            num_buckets=num_buckets
         )
         hidden_states = residual + hidden_states
 
@@ -502,7 +502,7 @@ class LlamaModel(LlamaPreTrainedModel):
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
         bucketize_out_attn_norm: Optional[int] = None, 
-        bucket_size: Optional[int] = None
+        num_buckets: Optional[int] = None
     ) -> Union[Tuple, BaseModelOutputWithPast]:
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
@@ -594,7 +594,7 @@ class LlamaModel(LlamaPreTrainedModel):
                     output_attentions=output_attentions,
                     use_cache=use_cache,
                     bucketize_out_attn_norm=bucketize_out_attn_norm, 
-                    bucket_size=bucket_size
+                    num_buckets=num_buckets
                 )
 
             hidden_states = layer_outputs[0]
@@ -667,7 +667,7 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
         bucketize_out_attn_norm: Optional[int] = None, 
-        bucket_size: Optional[int] = None
+        num_buckets: Optional[int] = None
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         r"""
         Args:
@@ -712,7 +712,7 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
             bucketize_out_attn_norm=bucketize_out_attn_norm,
-            bucket_size=bucket_size
+            num_buckets=num_buckets
         )
 
         hidden_states = outputs[0]
@@ -770,7 +770,7 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
                 "use_cache": kwargs.get("use_cache"),
                 "attention_mask": attention_mask,
                 "bucketize_out_attn_norm": kwargs.get("bucketize_out_attn_norm"),
-                "bucket_size": kwargs.get("bucket_size")
+                "num_buckets": kwargs.get("num_buckets")
             }
         )
         return model_inputs
