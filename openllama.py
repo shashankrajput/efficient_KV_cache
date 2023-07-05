@@ -98,6 +98,10 @@ for sample_index in sample_indices:
     
         loss.backward()
         optimizer.step()
+    print(f'attn_pred_model.alpha: {attn_pred_model.alpha}')
+    print(f'attn_pred_model.beta: {attn_pred_model.beta}')
+    print(f'attn_pred_model.positional_bias_forward_param: {attn_pred_model.positional_bias_forward_param}')
+    print(f'attn_pred_model.positional_bias_backward_param: {attn_pred_model.positional_bias_backward_param}')
     breakpoint()
 
         
