@@ -24,7 +24,7 @@ class Attn_Pred_Model(torch.nn.Module):
     def forward(self, x, past_steps):
         result = torch.zeros_like(x)
         for i in range(past_steps):
-            result+=self.alpha * (self.beta**i)*torch.nn.functional.pad(x[...,:-(i+1),:], pad=(0,0,i+1,0))
+            result+=self.alpha * (self.beta**i)*torch.nn.functional.pad(x[...,:-(i+1),:], pad=(0,0,i+1,0)) # should be i+1 at both locations
         
         positional_bias_forward = self.ones_vec@self.positional_bias_forward_param
         result+=positional_bias_forward
@@ -55,7 +55,7 @@ num_samples=1000 # Number of training samples
 sample_indices=np.random.permutation(len(ds['train']))
 useful_samples=0
 
-batch_size = 10
+batch_size = 8
 current_batch = []
 attn_block_size = 1024 # should be square
 
@@ -68,6 +68,7 @@ attn_pred_model.train()
 
 optimizer = torch.optim.SGD(attn_pred_model.parameters(), lr=0.001)
 
+acc_history = []
 for sample_index in sample_indices:
     with torch.no_grad():
         if useful_samples>=num_samples:
@@ -93,15 +94,29 @@ for sample_index in sample_indices:
         attn = attn.cuda()
 
         pred = attn_pred_model(attn, bucket_size)
-
-        loss = torch.mean(torch.square(torch.norm(attn - pred, dim=-1)))
+        true = attn
+        loss = torch.mean(torch.square(torch.norm(true - pred, dim=-1)))
     
         loss.backward()
         optimizer.step()
-    print(f'attn_pred_model.alpha: {attn_pred_model.alpha}')
-    print(f'attn_pred_model.beta: {attn_pred_model.beta}')
-    print(f'attn_pred_model.positional_bias_forward_param: {attn_pred_model.positional_bias_forward_param}')
-    print(f'attn_pred_model.positional_bias_backward_param: {attn_pred_model.positional_bias_backward_param}')
-    breakpoint()
+
+        
+        _, true_top_k = torch.topk(true, k=buckets_minimum, dim=-1)
+        _, pred_top_k = torch.topk(pred, k=buckets_minimum, dim=-1)
+        
+        
+
+        true_top_k = torch.zeros_like(true).scatter_(dim=-1, index=true_top_k, src=torch.ones_like(true))
+        pred_top_k = torch.zeros_like(pred).scatter_(dim=-1, index=pred_top_k, src=torch.ones_like(pred))
+
+        acc = torch.mean(torch.norm(true*pred_top_k,dim=-1)/ torch.norm(true*true_top_k,dim=-1))
+        acc_history.append(acc.item())
+
+print(f'attn_pred_model.alpha: {attn_pred_model.alpha}')
+print(f'attn_pred_model.beta: {attn_pred_model.beta}')
+print(f'attn_pred_model.positional_bias_forward_param: {attn_pred_model.positional_bias_forward_param}')
+print(f'attn_pred_model.positional_bias_backward_param: {attn_pred_model.positional_bias_backward_param}')
+print(f'acc_history.mean: {np.mean(acc_history)}')
+breakpoint()
 
         
