@@ -17,18 +17,24 @@ class Attn_Pred_Model(torch.nn.Module):
         self.register_buffer('ones_vec', torch.torch.ones((attn_block_size,1)))
         self.register_buffer('mask', torch.tril(torch.ones(attn_block_size,attn_block_size))[:,torch.arange(num_buckets)*num_buckets])
 
-    def forward(self, x, past_steps):
-        result = torch.zeros_like(x)
-        for i in range(past_steps):
-            result+=self.alpha * (self.beta**i)*torch.nn.functional.pad(x[...,:-(i+1),:], pad=(0,0,i+1,0)) # should be i+1 at both locations
-        
-        positional_bias_forward = self.ones_vec@self.positional_bias_forward_param
-        result+=positional_bias_forward
+    def forward(self, x, past_steps=None):
+        if self.training:
+            if past_steps is None:
+                raise Exception("past_steps is required during training")
+            result = torch.zeros_like(x)
+            for i in range(past_steps):
+                result+=self.alpha * (self.beta**i)*torch.nn.functional.pad(x[...,:-(i+1),:], pad=(0,0,i+1,0)) # should be i+1 at both locations
+            
+            positional_bias_forward = self.ones_vec@self.positional_bias_forward_param
+            result+=positional_bias_forward
 
-        positional_bias_backward = self.ones_vec@self.positional_bias_backward_param
-        positional_bias_backward = torch.gather(positional_bias_backward, dim=-1, index=self.arange2)
-        result+=positional_bias_backward
+            positional_bias_backward = self.ones_vec@self.positional_bias_backward_param
+            positional_bias_backward = torch.gather(positional_bias_backward, dim=-1, index=self.arange2)
+            result+=positional_bias_backward
 
-        result*=self.mask
+            result*=self.mask
 
-        return result
+            return result
+        else:
+            
+
