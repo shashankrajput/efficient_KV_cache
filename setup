@@ -1,0 +1,7 @@
+nvcr.io/nvidia/pytorch:22.06-py3 
+
+pip install huggingface_hub
+pip install transformers
+pip install datasets
+pip install sentencepiece
+pip install accelerate
