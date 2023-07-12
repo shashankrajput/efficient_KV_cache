@@ -190,7 +190,8 @@ class LlamaAttention(nn.Module):
         output_attentions: bool = False,
         use_cache: bool = False,
         bucketize_out_attn_norm: Optional[int] = None, 
-        num_buckets: Optional[int] = None
+        num_buckets: Optional[int] = None,
+        use_efficient_caching: Optional[bool] = False,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
         bsz, q_len, _ = hidden_states.size()
 
@@ -204,6 +205,10 @@ class LlamaAttention(nn.Module):
         cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len)
         query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids)
         # [bsz, nh, t, hd]
+
+        if use_efficient_caching:
+            key_states = key_states.cpu()
+            query_states = query_states.cpu()
 
         if past_key_value is not None:
             # reuse k, v, self_attention
@@ -277,7 +282,8 @@ class LlamaDecoderLayer(nn.Module):
         output_attentions: Optional[bool] = False,
         use_cache: Optional[bool] = False,
         bucketize_out_attn_norm: Optional[int] = None, 
-        num_buckets: Optional[int] = None
+        num_buckets: Optional[int] = None,
+        use_efficient_caching: Optional[bool] = False,
     ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
         """
         Args:
@@ -305,7 +311,8 @@ class LlamaDecoderLayer(nn.Module):
             output_attentions=output_attentions,
             use_cache=use_cache,
             bucketize_out_attn_norm=bucketize_out_attn_norm,
-            num_buckets=num_buckets
+            num_buckets=num_buckets,
+            use_efficient_caching=use_efficient_caching,
         )
         hidden_states = residual + hidden_states
 
@@ -502,7 +509,8 @@ class LlamaModel(LlamaPreTrainedModel):
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
         bucketize_out_attn_norm: Optional[int] = None, 
-        num_buckets: Optional[int] = None
+        num_buckets: Optional[int] = None,
+        use_efficient_caching: Optional[bool] = False,
     ) -> Union[Tuple, BaseModelOutputWithPast]:
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
@@ -667,7 +675,8 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
         bucketize_out_attn_norm: Optional[int] = None, 
-        num_buckets: Optional[int] = None
+        num_buckets: Optional[int] = None,
+        use_efficient_caching: Optional[bool] = False,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         r"""
         Args:
@@ -712,7 +721,8 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
             output_hidden_states=output_hidden_states,
             return_dict=return_dict,
             bucketize_out_attn_norm=bucketize_out_attn_norm,
-            num_buckets=num_buckets
+            num_buckets=num_buckets,
+            use_efficient_caching=use_efficient_caching,
         )
 
         hidden_states = outputs[0]
@@ -770,7 +780,8 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
                 "use_cache": kwargs.get("use_cache"),
                 "attention_mask": attention_mask,
                 "bucketize_out_attn_norm": kwargs.get("bucketize_out_attn_norm"),
-                "num_buckets": kwargs.get("num_buckets")
+                "num_buckets": kwargs.get("num_buckets"),
+                "use_efficient_caching": kwargs.get("use_efficient_caching")
             }
         )
         return model_inputs

@@ -11,9 +11,9 @@ from attention_prediction import Attn_Pred_Model
 model_path = 'openlm-research/open_llama_7b'
 # model_path = 'openlm-research/open_llama_13b'
 
-tokenizer = LlamaTokenizer.from_pretrained(model_path, truncation_side='right', load_in_4bit=True)
+tokenizer = LlamaTokenizer.from_pretrained(model_path, truncation_side='right')
 model = LlamaForCausalLM.from_pretrained(
-    model_path, torch_dtype=torch.float16, device_map='auto'
+    model_path, torch_dtype=torch.float16, device_map='auto' #, load_in_4bit=True
 )
 model.eval()
 
@@ -31,7 +31,7 @@ num_buckets = int(math.sqrt(attn_block_size))
 bucket_size = num_buckets
 buckets_minimum = round(num_buckets*0.2)
 
-attn_pred_model = Attn_Pred_Model(num_buckets, attn_block_size).cuda()
+attn_pred_model = Attn_Pred_Model(attn_block_size=attn_block_size, num_buckets=num_buckets, bucket_size=bucket_size, past_steps=bucket_size, buckets_minimum=buckets_minimum).cuda()
 attn_pred_model.train()
 
 optimizer = torch.optim.SGD(attn_pred_model.parameters(), lr=0.001)
@@ -61,23 +61,25 @@ for sample_index in sample_indices:
         optimizer.zero_grad()
         attn = attn.cuda()
 
-        pred = attn_pred_model(attn, bucket_size)
-        true = attn
+        pred = attn_pred_model(attn)
+        true = attn*attn_pred_model.mask
         loss = torch.mean(torch.square(torch.norm(true - pred, dim=-1)))
     
         loss.backward()
         optimizer.step()
 
         
-        _, true_top_k = torch.topk(true, k=buckets_minimum, dim=-1)
-        _, pred_top_k = torch.topk(pred, k=buckets_minimum, dim=-1)
-        
-        
+        _, true_top_k = torch.topk(true, k=buckets_minimum-1, dim=-1)
+        _, pred_top_k = torch.topk(pred, k=buckets_minimum-1, dim=-1)
+
+        last_bucket = torch.div(torch.arange(attn_block_size), bucket_size, rounding_mode='floor').unsqueeze(dim=-1).unsqueeze(dim=0).unsqueeze(dim=0).expand(tuple(true_top_k.shape[:-1])+(1,)).cuda()
+        true_top_k = torch.cat([true_top_k, last_bucket], dim=-1)
+        pred_top_k = torch.cat([pred_top_k, last_bucket], dim=-1)
 
         true_top_k = torch.zeros_like(true).scatter_(dim=-1, index=true_top_k, src=torch.ones_like(true))
         pred_top_k = torch.zeros_like(pred).scatter_(dim=-1, index=pred_top_k, src=torch.ones_like(pred))
 
-        acc = torch.mean(torch.norm(true*pred_top_k,dim=-1)/ torch.norm(true*true_top_k,dim=-1))
+        acc = torch.mean((torch.maximum(torch.norm(true*pred_top_k,dim=-1), torch.tensor(1e-7))/ torch.maximum(torch.norm(true*true_top_k,dim=-1), torch.tensor(1e-7)))[...,(buckets_minimum)*bucket_size:])
         acc_history.append(acc.item())
 
 print(f'attn_pred_model.alpha: {attn_pred_model.alpha}')
@@ -86,5 +88,5 @@ print(f'attn_pred_model.positional_bias_forward_param: {attn_pred_model.position
 print(f'attn_pred_model.positional_bias_backward_param: {attn_pred_model.positional_bias_backward_param}')
 print(f'acc_history.mean: {np.mean(acc_history)}')
 
-torch.save(attn_pred_model, "attn_pred_model.pt")
+torch.save(attn_pred_model.state_dict(), "attn_pred_model.pt")
         
