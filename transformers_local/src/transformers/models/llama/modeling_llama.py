@@ -70,6 +70,108 @@ def _expand_mask(mask: torch.Tensor, dtype: torch.dtype, tgt_len: Optional[int] 
 
     return inverted_mask.masked_fill(inverted_mask.to(torch.bool), torch.finfo(dtype).min)
 
+def _compute_attn_weights(query_states, key_states, attention_mask):
+    attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(self.head_dim)
+
+    if attention_mask is not None:
+        attn_weights = attn_weights + attention_mask
+        attn_weights = torch.max(
+            attn_weights, torch.tensor(torch.finfo(attn_weights.dtype).min, device=attn_weights.device)
+        )
+
+    # upcast attention to fp32
+    return nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
+
+def _compute_attn_weights_sign(query_states, key_states, attention_mask):
+    assert query_states.shape[-2] == 1
+
+
+
+
+    attn_weights = (torch.logical_not(torch.logical_xor(query_states , key_states))).sum(dim=-1) / math.sqrt(self.head_dim)
+
+    if attention_mask is not None:
+        attn_weights = attn_weights + attention_mask
+        attn_weights = torch.max(
+            attn_weights, torch.tensor(torch.finfo(attn_weights.dtype).min, device=attn_weights.device)
+        )
+
+    # upcast attention to fp32
+    return nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
+
+def _compute_attn_output_and_weights(query_states, key_states, value_states, attention_mask):
+    
+    attn_weights = _compute_attn_weights(query_states, key_states, attention_mask)
+
+    attn_output = torch.matmul(attn_weights, value_states)
+
+
+    attn_output = attn_output.transpose(1, 2)
+    attn_output = attn_output.reshape(bsz, q_len, self.hidden_size)
+
+    attn_output = self.o_proj(attn_output)
+    return attn_output, attn_weights
+
+class EfficientKVCache():
+    key_float_cpu: torch.Tensor # All the keys are stored on CPU
+    value_float_cpu: torch.Tensor # All the values are stored on CPU
+
+    key_float_gpu: torch.Tensor # Important keys are stored on GPU
+    value_float_gpu: torch.Tensor # Important values are stored on CPU
+
+    key_int_gpu: torch.Tensor
+
+    bucket_size: int
+    num_gpu_buckets: int
+    gpu_buckets: torch.Tensor
+
+
+    def __init__(self, key_states, value_states, bucket_size, num_gpu_buckets):
+        assert key_states.shape[-2] = bucket_size*num_gpu_buckets
+        self.key_float_cpu, self.value_float_cpu = (key_states.cpu(), value_states.cpu())
+        self.key_float_gpu, self.value_float_gpu = (key_states, value_states)
+
+        self.key_int_gpu = self.to_sign(key_states)
+
+        self.num_gpu_buckets = num_gpu_buckets
+        self.bucket_size = bucket_size
+        self.gpu_buckets = torch.arange(num_gpu_buckets).unsqueeze(0).unsqueeze(0).repeat(key_states.shape[:2]+(1,)).cuda()
+        return
+
+    def add_KV(self, key, value):
+        self.key_float_cpu = torch.cat([self.key_float_cpu, key.cpu()], dim=2)
+        self.value_float_cpu = torch.cat([self.value_float_cpu, value.cpu()], dim=2)
+
+        self.key_int_gpu = torch.cat([self.key_int_gpu, self.to_sign(key)], dim=2)
+        return
+    
+    def to_sign(self, x):
+        return x>0
+        
+    
+    def compute_sparse_attn(self, query_states):
+
+        approx_attn_weights = _compute_attn_weights_sign(self.to_sign(query_states), self.key_int_gpu, attention_mask=None)
+
+        approx_attn_weights attn_weights.view(attn_weights.shape[:-1]+(attn_weights.shape[-1]//self.bucket_size, self.bucket_size))
+        approx_attn_weights = torch.norm(approx_attn_weights, dim=-1, p=2)
+
+        top_bucket_indices = torch.argmax(approx_attn_weights, dim=-1, keepdim=True)
+
+        top_bucket_key = self.key_float_cpu[...,top_bucket_indices*self.bucket_size:(top_bucket_indices+1)*self.bucket_size,:].cuda()
+        top_bucket_value = self.value_float_cpu[...,top_bucket_indices*self.bucket_size:(top_bucket_indices+1)*self.bucket_size,:].cuda()
+        top_bucket_key = torch.nn.functional.pad(top_bucket_key, (0,0,0, self.bucket_size - top_bucket_key.shape[-2]), value=float('-inf'))
+        top_bucket_value = torch.nn.functional.pad(top_bucket_value, (0,0,0, self.bucket_size - top_bucket_value.shape[-2]), value=float('-inf'))
+
+        cache_hit = (top_bucket_indices == self.gpu_buckets).sum(dim=-1).unsqueeze(dim=-1).unsqueeze(dim=-1)
+        
+        index = torch.randint(self.num_gpu_buckets, size=(1,)).item()
+        
+        self.key_float_gpu[..., index*self.bucket_size:(index+1)*self.bucket_size,:] += (1-cache_hit)*(top_bucket_key - self.key_float_gpu[..., index*self.bucket_size:(index+1)*self.bucket_size,:])
+        self.value_float_gpu[..., index*self.bucket_size:(index+1)*self.bucket_size,:] += (1-cache_hit)*(top_bucket_value - self.value_float_gpu[..., index*self.bucket_size:(index+1)*self.bucket_size,:])
+
+        return _compute_attn_output_and_weights(query_states, self.key_float_gpu, self.value_float_gpu, attention_mask=None)
+    
 
 class LlamaRMSNorm(nn.Module):
     def __init__(self, hidden_size, eps=1e-6):
@@ -201,60 +303,39 @@ class LlamaAttention(nn.Module):
 
         kv_seq_len = key_states.shape[-2]
         if past_key_value is not None:
-            kv_seq_len += past_key_value[0].shape[-2]
+            if use_efficient_caching:
+                kv_seq_len += past_key_value.key_float_cpu.shape[-2]
+            else:
+                kv_seq_len += past_key_value[0].shape[-2]
         cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len)
         query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids)
         # [bsz, nh, t, hd]
 
         if use_efficient_caching:
-            key_states = key_states.cpu()
-            query_states = query_states.cpu()
+            if past_key_value is None:
+                past_key_value = EfficientKVCache(key_states, value_states)
+                attn_output, attn_weights = _compute_attn_output_and_weights(query_states, key_states, value_states, attention_mask)
+            else:
+                past_key_value.add_KV(key_states, value_states)
+                assert attention_mask is None # or empty
+                attn_output, attn_weights = past_key_value.compute_sparse_attn(query_states)
+        
+        else:
+            if past_key_value is not None:
+                # reuse k, v, self_attention
+                key_states = torch.cat([past_key_value[0], key_states], dim=2)
+                value_states = torch.cat([past_key_value[1], value_states], dim=2)
 
-        if past_key_value is not None:
-            # reuse k, v, self_attention
-            key_states = torch.cat([past_key_value[0], key_states], dim=2)
-            value_states = torch.cat([past_key_value[1], value_states], dim=2)
+            past_key_value = (key_states, value_states) if use_cache else None
+            attn_output, attn_weights = _compute_attn_output_and_weights(query_states, key_states, value_states, attention_mask)
 
-        past_key_value = (key_states, value_states) if use_cache else None
-
-        attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(self.head_dim)
-
-        if attn_weights.size() != (bsz, self.num_heads, q_len, kv_seq_len):
-            raise ValueError(
-                f"Attention weights should be of size {(bsz, self.num_heads, q_len, kv_seq_len)}, but is"
-                f" {attn_weights.size()}"
-            )
-
-        if attention_mask is not None:
-            if attention_mask.size() != (bsz, 1, q_len, kv_seq_len):
-                raise ValueError(
-                    f"Attention mask should be of size {(bsz, 1, q_len, kv_seq_len)}, but is {attention_mask.size()}"
-                )
-            attn_weights = attn_weights + attention_mask
-            attn_weights = torch.max(
-                attn_weights, torch.tensor(torch.finfo(attn_weights.dtype).min, device=attn_weights.device)
-            )
-
-        # upcast attention to fp32
-        attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
-        attn_output = torch.matmul(attn_weights, value_states)
-
-        if attn_output.size() != (bsz, self.num_heads, q_len, self.head_dim):
-            raise ValueError(
-                f"`attn_output` should be of size {(bsz, self.num_heads, q_len, self.head_dim)}, but is"
-                f" {attn_output.size()}"
-            )
-
-        attn_output = attn_output.transpose(1, 2)
-        attn_output = attn_output.reshape(bsz, q_len, self.hidden_size)
-
-        attn_output = self.o_proj(attn_output)
+        
 
         if not output_attentions:
             attn_weights = None
         
         elif bucketize_out_attn_norm is not None and num_buckets is not None:
-            attn_weights = torch.reshape(attn_weights, attn_weights.shape[:-1]+(num_buckets, attn_weights.shape[-1]//num_buckets))
+            attn_weights = attn_weights.view(attn_weights.shape[:-1]+(num_buckets, attn_weights.shape[-1]//num_buckets))
             attn_weights = torch.norm(attn_weights, dim=-1, p=bucketize_out_attn_norm)
 
         return attn_output, attn_weights, past_key_value
