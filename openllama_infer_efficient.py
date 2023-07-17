@@ -4,7 +4,7 @@ import numpy as np
 from datasets import load_dataset
 import math
 
-from attention_prediction import Attn_Pred_Model
+# from attention_prediction import Attn_Pred_Model
 
 
 # model_path = 'openlm-research/open_llama_3b'
@@ -31,9 +31,9 @@ num_buckets = int(math.sqrt(attn_block_size))
 bucket_size = num_buckets
 buckets_minimum = round(num_buckets*0.2)
 
-attn_pred_model = Attn_Pred_Model(attn_block_size, num_buckets, bucket_size).cuda()
-attn_pred_model.load_state_dict(torch.load("attn_pred_model.pt"))
-attn_pred_model.eval()
+# attn_pred_model = Attn_Pred_Model(attn_block_size, num_buckets, bucket_size).cuda()
+# attn_pred_model.load_state_dict(torch.load("attn_pred_model.pt"))
+# attn_pred_model.eval()
 
 
 acc_history = []
@@ -53,7 +53,7 @@ for sample_index in sample_indices:
         input_ids = tokenizer(current_batch, return_tensors="pt", truncation=True, max_length=buckets_minimum*bucket_size).input_ids
         current_batch=[]
         generation_output = model.generate(
-        input_ids=input_ids, max_new_tokens=100, use_efficient_caching=True
+        input_ids=input_ids, max_new_tokens=100, efficient_cache_params={'use_efficient_caching':True, 'bucket_size': bucket_size, 'num_gpu_buckets': buckets_minimum}
         ) # max_new_tokens should be larger, to analyze behaviour on generated text
         print(tokenizer.batch_decode(generation_output))
         # breakpoint()
