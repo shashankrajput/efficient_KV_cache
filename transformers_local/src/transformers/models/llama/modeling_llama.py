@@ -95,6 +95,7 @@ class EfficientKVCache():
     value_float_gpu_right: torch.Tensor 
 
     key_sign_gpu: torch.Tensor
+    proj_matrix: torch.Tensor
 
     seq_len: int
 
@@ -116,6 +117,8 @@ class EfficientKVCache():
 
         self.value_float_gpu_left = value_states[..., :bucket_size,:]
         self.value_float_gpu_right = value_states[..., -3*bucket_size:,:]
+
+        self.proj_matrix = (torch.normal(mean=torch.zeros(key_states.shape[-1], key_states.shape[-1]//4))/math.sqrt(key_states.shape[-1]//4)).to(key_states)
         
         self.key_sign_gpu = self.to_sign(key_states)
 
@@ -141,16 +144,27 @@ class EfficientKVCache():
         self.key_sign_gpu = torch.cat([self.key_sign_gpu, self.to_sign(key)], dim=2)
         return
     
+    # temporary
     def _compute_attn_weights_sign(self, query_states, key_states, head_dim, out_dtype):
-        assert query_states.shape[-2] == 1
+        return _compute_attn_weights(query_states, key_states, head_dim, None).squeeze()
 
-        attn_weights = (torch.logical_not(torch.logical_xor(query_states , key_states))).sum(dim=-1) / math.sqrt(head_dim)
-        # upcast attention to fp32
-        return nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(out_dtype)
+    # ### Uncomment
+    # def _compute_attn_weights_sign(self, query_states, key_states, head_dim, out_dtype):
+    #     assert query_states.shape[-2] == 1
 
+    #     attn_weights = 0.88*(torch.logical_not(torch.logical_xor(query_states , key_states))).sum(dim=-1) / math.sqrt(head_dim)
+    #     # upcast attention to fp32
+    #     return nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(out_dtype)
+
+
+    # temporary
     def to_sign(self, x):
-        return x>0
-        
+        result = x@self.proj_matrix
+        return result
+
+    # ### Uncomment
+    # def to_sign(self, x):
+    #     return x>0
     
     def get_important_KV_cache(self, query_states, head_dim):
         
@@ -161,7 +175,7 @@ class EfficientKVCache():
         approx_attn_weights = self._compute_attn_weights_sign(self.to_sign(query_states), self.key_sign_gpu[...,left_margin:-right_margin,:], head_dim, query_states.dtype)
 
         approx_attn_weights = approx_attn_weights.view(approx_attn_weights.shape[:-1]+(-1, self.bucket_size))
-        approx_attn_weights = torch.norm(approx_attn_weights, dim=-1, p=2)
+        approx_attn_weights = torch.linalg.norm(approx_attn_weights, dim=-1, ord=2)
 
         _, top_bucket_indices = torch.topk(approx_attn_weights, dim=-1, k=2)
 
@@ -176,7 +190,32 @@ class EfficientKVCache():
         approx_top_values=torch.reshape(approx_top_values, approx_top_values.shape[:-3]+(-1, approx_top_values.shape[-1]))
         
         keys, values = torch.cat((self.key_float_gpu_left, self.key_float_gpu_right, approx_top_keys), dim=-2), torch.cat((self.value_float_gpu_left, self.value_float_gpu_right, approx_top_values), dim=-2)
-        # breakpoint() # TODO: test the efficiency and accuracy of this technique
+        
+        ### Debug code
+        if self.seq_len>400:
+        # if True:
+            padding = self.bucket_size-self.seq_len%self.bucket_size
+            keys_true = self.key_float_cpu.view(self.key_float_cpu.shape[:-3]+(-1, self.key_float_cpu.shape[-1])).cuda()
+            keys_true = keys_true[..., :-padding,:]
+            true_attn_weights = _compute_attn_weights(query_states, keys_true, head_dim, None)
+            true_attn_weights = torch.nn.functional.pad(true_attn_weights, (0, padding))
+            true_attn_weights = true_attn_weights.view(true_attn_weights.shape[:-1]+(-1, self.bucket_size))
+            true_attn_bucketized = torch.linalg.norm(true_attn_weights, dim=-1, ord=2)
+            # true_attn_bucketized = torch.linalg.norm(true_attn_weights, dim=-1, ord=float('inf'))
+            # true_attn_bucketized = torch.sum(true_attn_weights, dim=-1)
+            true_top_bucket_vals, true_top_bucket_indices = torch.topk(true_attn_bucketized, dim=-1, k=6)
+
+            fixed_indices = torch.ones((top_bucket_indices[...,0,0].shape[:-1])+(1,), dtype=int)
+            pred_indices = torch.cat((top_bucket_indices[...,0,0], 0*fixed_indices, (self.key_float_cpu.shape[-3]-1)*fixed_indices, (self.key_float_cpu.shape[-3]-2)*fixed_indices, (self.key_float_cpu.shape[-3]-3)*fixed_indices),dim=-1)
+            # pred_indices = torch.cat((0*fixed_indices, (self.key_float_cpu.shape[-3]-1)*fixed_indices, (self.key_float_cpu.shape[-3]-2)*fixed_indices, (self.key_float_cpu.shape[-3]-3)*fixed_indices, (self.key_float_cpu.shape[-3]-4)*fixed_indices, 1*fixed_indices),dim=-1)
+
+            pred_norm = torch.linalg.norm(torch.gather(input=true_attn_bucketized.squeeze(), dim=-1, index=pred_indices.cuda()), dim=-1, ord=2)
+            true_norm = torch.linalg.norm(true_top_bucket_vals, dim=-1, ord=2).squeeze()
+            print(f"mean: {torch.mean(pred_norm/true_norm)}")
+            print(f"min: {torch.min(pred_norm/true_norm)}")
+            breakpoint() # TODO: test the efficiency and accuracy of this technique
+        ### End of Debug code
+
         return keys, values
 
 class LlamaRMSNorm(nn.Module):
@@ -360,7 +399,7 @@ class LlamaAttention(nn.Module):
         
         elif efficient_cache_params is not None and efficient_cache_params['bucketize_out_attn_norm'] is not None and efficient_cache_params['num_buckets'] is not None:
             attn_weights = attn_weights.view(attn_weights.shape[:-1]+(efficient_cache_params['num_buckets'], attn_weights.shape[-1]//efficient_cache_params['num_buckets']))
-            attn_weights = torch.norm(attn_weights, dim=-1, p=efficient_cache_params['bucketize_out_attn_norm'])
+            attn_weights = torch.linalg.norm(attn_weights, dim=-1, ord=efficient_cache_params['bucketize_out_attn_norm'])
 
         return attn_output, attn_weights, past_key_value
 
@@ -634,7 +673,7 @@ class LlamaModel(LlamaPreTrainedModel):
 
         if past_key_values is not None:
             if efficient_cache_params is not None and efficient_cache_params['use_efficient_caching']:
-                past_key_values_length = past_key_values[0].seq_len
+                past_key_values_length = past_key_values[5].seq_len
             else:
                 past_key_values_length = past_key_values[0][0].shape[2]
             seq_length_with_past = seq_length_with_past + past_key_values_length
@@ -703,7 +742,7 @@ class LlamaModel(LlamaPreTrainedModel):
                     past_key_value=past_key_value,
                     output_attentions=output_attentions,
                     use_cache=use_cache,
-                    efficient_cache_params=efficient_cache_params,
+                    efficient_cache_params=efficient_cache_params if idx not in {0,1,2,len(self.layers)-3, len(self.layers)-2, len(self.layers)-1} else None,
                 )
 
             hidden_states = layer_outputs[0]

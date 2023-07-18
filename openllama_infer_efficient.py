@@ -53,7 +53,7 @@ for sample_index in sample_indices:
         input_ids = tokenizer(current_batch, return_tensors="pt", truncation=True, max_length=buckets_minimum*bucket_size).input_ids
         current_batch=[]
         generation_output = model.generate(
-        input_ids=input_ids, max_new_tokens=100, efficient_cache_params={'use_efficient_caching':True, 'bucket_size': bucket_size, 'num_gpu_buckets': buckets_minimum}
+        input_ids=input_ids, max_new_tokens=500, efficient_cache_params={'use_efficient_caching':True, 'bucket_size': bucket_size, 'num_gpu_buckets': buckets_minimum}
         ) # max_new_tokens should be larger, to analyze behaviour on generated text
         print(tokenizer.batch_decode(generation_output))
         # breakpoint()
