@@ -144,27 +144,32 @@ class EfficientKVCache():
         self.key_sign_gpu = torch.cat([self.key_sign_gpu, self.to_sign(key)], dim=2)
         return
     
-    # temporary
-    def _compute_attn_weights_sign(self, query_states, key_states, head_dim, out_dtype):
-        return _compute_attn_weights(query_states, key_states, head_dim, None).squeeze()
-
-    # ### Uncomment
+    # # temporary
     # def _compute_attn_weights_sign(self, query_states, key_states, head_dim, out_dtype):
-    #     assert query_states.shape[-2] == 1
+    #     return _compute_attn_weights(query_states, key_states, head_dim, None).squeeze()
 
-    #     attn_weights = 0.88*(torch.logical_not(torch.logical_xor(query_states , key_states))).sum(dim=-1) / math.sqrt(head_dim)
-    #     # upcast attention to fp32
-    #     return nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(out_dtype)
+    ### Uncomment
+    def _compute_attn_weights_sign(self, query_states, key_states, head_dim, out_dtype):
+        assert query_states.shape[-2] == 1
+
+        # attn_weights = 0.77*(2*(torch.logical_not(torch.logical_xor(query_states , key_states))-1).sum(dim=-1) / math.sqrt(head_dim))
+
+        attn_weights = torch.logical_not(torch.logical_xor(query_states , key_states))
+        attn_weights = 2 * (attn_weights.sum(dim=-1)) - attn_weights.shape[-1]
+        attn_weights = 1.07 * attn_weights / math.sqrt(head_dim) # This 1.07 can be tuned a bit, 1.07 came from very rough calculations
+        
+        # upcast attention to fp32
+        return nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(out_dtype)
 
 
-    # temporary
-    def to_sign(self, x):
-        result = x@self.proj_matrix
-        return result
-
-    # ### Uncomment
+    # # temporary
     # def to_sign(self, x):
-    #     return x>0
+    #     result = x@self.proj_matrix
+    #     return result
+
+    ### Uncomment
+    def to_sign(self, x):
+        return x>0
     
     def get_important_KV_cache(self, query_states, head_dim):
         
