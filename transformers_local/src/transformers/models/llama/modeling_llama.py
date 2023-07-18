@@ -156,7 +156,7 @@ class EfficientKVCache():
 
         attn_weights = torch.logical_not(torch.logical_xor(query_states , key_states))
         attn_weights = 2 * (attn_weights.sum(dim=-1)) - attn_weights.shape[-1]
-        attn_weights = 1.07 * attn_weights / math.sqrt(head_dim) # This 1.07 can be tuned a bit, 1.07 came from very rough calculations
+        attn_weights = attn_weights / math.sqrt(head_dim) # This should be multiplied by 1.07
         
         # upcast attention to fp32
         return nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(out_dtype)
